@@ -6,8 +6,7 @@ from database.database import get_db
 from database.crud import LeadCRUD
 from agent.qualifier import QualifierAgent
 from outreach.whatsapp import ZAPIClient
-from crm.notifications import TelegramNotifier
-import os
+from config import Config
 import logging
 
 app = FastAPI(title="Prospector System API")
@@ -15,12 +14,11 @@ app = FastAPI(title="Prospector System API")
 logger = logging.getLogger(__name__)
 
 # Inicializa clients
-agent = QualifierAgent(api_key=os.getenv('ANTHROPIC_API_KEY'))
+agent = QualifierAgent(api_key=Config.OPENAI_API_KEY)
 zapi = ZAPIClient(
-    instance_id=os.getenv('ZAPI_INSTANCE_ID'),
-    token=os.getenv('ZAPI_TOKEN')
+    instance_id=Config.ZAPI_INSTANCE_ID,
+    token=Config.ZAPI_TOKEN
 )
-telegram = TelegramNotifier(token=os.getenv('TELEGRAM_BOT_TOKEN'))
 
 @app.get("/")
 def root():
@@ -89,14 +87,14 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
             
             logger.info(f"✅ Resposta enviada. Estágio: {estagio}")
             
-            # Notifica humano se necessário
+            # Log se precisa de atenção humana
             if deve_notificar:
-                telegram.notificar_reuniao_agendada(lead, resposta)
-                logger.info("📬 Notificação enviada ao Telegram")
+                logger.warning(f"⚠️ ATENÇÃO: Lead {lead.nome} precisa de handoff humano!")
         
         return JSONResponse({
             "status": "success",
-            "estagio": estagio
+            "estagio": estagio,
+            "precisa_handoff": deve_notificar
         })
         
     except Exception as e:

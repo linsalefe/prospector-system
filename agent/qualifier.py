@@ -1,12 +1,11 @@
 # agent/qualifier.py
-import anthropic
+from openai import OpenAI
 from typing import Dict, List, Tuple
-from datetime import datetime, timedelta
-import json
+import os
 
 class QualifierAgent:
     def __init__(self, api_key: str):
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = OpenAI(api_key=api_key)
         
     def processar_mensagem(
         self, 
@@ -22,7 +21,10 @@ class QualifierAgent:
         """
         
         # Monta histórico formatado
-        messages = []
+        messages = [
+            {"role": "system", "content": self._build_system_prompt(lead_data)}
+        ]
+        
         for msg in historico:
             messages.append({
                 "role": "user" if msg['direcao'] == 'recebida' else "assistant",
@@ -35,19 +37,15 @@ class QualifierAgent:
             "content": mensagem_usuario
         })
         
-        # System prompt
-        system_prompt = self._build_system_prompt(lead_data)
-        
-        # Chama Claude
-        response = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
+        # Chama ChatGPT
+        response = self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
             max_tokens=400,
-            temperature=0.7,
-            system=system_prompt,
-            messages=messages
+            temperature=0.7
         )
         
-        resposta = response.content[0].text
+        resposta = response.choices[0].message.content
         
         # Analisa estágio e intenção
         estagio = self._analisar_estagio(mensagem_usuario, resposta)

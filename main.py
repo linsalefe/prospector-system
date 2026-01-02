@@ -2,6 +2,7 @@
 import os
 import logging
 from dotenv import load_dotenv
+from config import Config
 from database.database import init_db, SessionLocal
 from database.crud import LeadCRUD
 from scrapers.google_maps import ImobiliariasScraper
@@ -31,8 +32,8 @@ def scraping_job():
     logger.info("🔍 Iniciando job de scraping...")
     
     scraper = ImobiliariasScraper(
-        google_api_key=os.getenv('GOOGLE_MAPS_API_KEY'),
-        hunter_api_key=os.getenv('HUNTER_API_KEY')
+        google_api_key=Config.GOOGLE_MAPS_API_KEY,
+        hunter_api_key=Config.HUNTER_API_KEY
     )
     
     cidades = [
@@ -65,14 +66,22 @@ def iniciar_sistema():
     
     logger.info("🚀 Iniciando Prospector System...")
     
+    # Valida configurações
+    try:
+        Config.validar()
+        logger.info("✅ Configurações validadas")
+    except ValueError as e:
+        logger.error(f"❌ {e}")
+        return
+    
     # Inicializa database
     init_db()
     logger.info("✅ Database inicializado")
     
     # Inicializa scheduler de outreach
     zapi = ZAPIClient(
-        instance_id=os.getenv('ZAPI_INSTANCE_ID'),
-        token=os.getenv('ZAPI_TOKEN')
+        instance_id=Config.ZAPI_INSTANCE_ID,
+        token=Config.ZAPI_TOKEN
     )
     
     scheduler = OutreachScheduler(zapi)
