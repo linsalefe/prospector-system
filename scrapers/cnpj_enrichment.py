@@ -3,6 +3,7 @@ import requests
 import time
 import logging
 import re
+from .local_cnpj_search import LocalCNPJSearch
 from .cnpj_google import CNPJGoogleSearch
 
 logger = logging.getLogger(__name__)
@@ -10,21 +11,32 @@ logger = logging.getLogger(__name__)
 class CNPJEnricher:
     
     @staticmethod
-    def buscar_cnpj_empresa(nome_empresa: str, cidade: str, website: str = None) -> str:
+    def buscar_cnpj_empresa(nome_empresa: str, cidade: str, estado: str, website: str = None) -> str:
         """
-        Busca CNPJ da empresa (várias estratégias)
+        Busca CNPJ da empresa (várias estratégias em ordem de prioridade)
         """
         
-        # Estratégia 1: Buscar no website da empresa
+        # Estratégia 1: Banco local (MELHOR - offline e rápido)
+        logger.info(f"  💾 Buscando no banco local...")
+        try:
+            resultado = LocalCNPJSearch.melhor_match(nome_empresa)
+            if resultado:
+                return resultado['cnpj']
+        except Exception as e:
+            logger.warning(f"  ⚠️ Erro no banco local: {e}")
+        
+        time.sleep(1)
+        
+        # Estratégia 2: Buscar no website da empresa
         if website:
             logger.info(f"  🌐 Tentando extrair do website...")
             cnpj = CNPJGoogleSearch.buscar_cnpj_website(website)
             if cnpj:
                 return cnpj
-            time.sleep(2)
+            time.sleep(1)
         
-        # Estratégia 2: Buscar no Google
-        logger.info(f"  🔍 Buscando no Google...")
+        # Estratégia 3: Buscar no Google (fallback)
+        logger.info(f"  🔍 Buscando no Google (fallback)...")
         cnpj = CNPJGoogleSearch.buscar_cnpj_google(nome_empresa, cidade)
         if cnpj:
             return cnpj
@@ -34,7 +46,7 @@ class CNPJEnricher:
     @staticmethod
     def buscar_dados_cnpj(cnpj: str) -> dict:
         """
-        Busca dados completos da empresa + sócios
+        Busca dados completos da empresa + sócios na Receita Federal
         """
         if not cnpj:
             return None
@@ -42,20 +54,18 @@ class CNPJEnricher:
         # Limpa CNPJ
         cnpj_limpo = re.sub(r'[^0-9]', '', cnpj)
         
-        logger.info(f"  📋 Consultando CNPJ: {cnpj_limpo}")
+        logger.info(f"  📋 Consultando CNPJ na Receita: {cnpj_limpo}")
         
         try:
-            # ReceitaWS - API gratuita (cuidado com rate limit: 3 req/min)
+            # ReceitaWS - API gratuita (LIMITE: 3 req/min)
             url = f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}"
             
             response = requests.get(url, timeout=15)
             
-            logger.info(f"  📡 Status code: {response.status_code}")
+            logger.info(f"  📡 Status: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
-                
-                logger.info(f"  📦 Resposta status: {data.get('status')}")
                 
                 if data.get('status') == 'OK':
                     resultado = {
@@ -75,60 +85,55 @@ class CNPJEnricher:
                             'qualificacao': socio.get('qual', '')
                         })
                     
-                    logger.info(f"  ✅ Dados obtidos: {len(resultado['socios'])} sócios encontrados")
+                    logger.info(f"  ✅ {len(resultado['socios'])} sócios encontrados")
                     return resultado
                 else:
-                    logger.warning(f"  ⚠️ Status não OK: {data.get('message', 'Sem mensagem')}")
+                    logger.warning(f"  ⚠️ {data.get('message', 'Erro desconhecido')}")
                     return None
             
             elif response.status_code == 429:
-                logger.warning("⚠️ Rate limit atingido, aguardando 20s...")
+                logger.warning("⚠️ Rate limit! Aguardando 20s...")
                 time.sleep(20)
                 return CNPJEnricher.buscar_dados_cnpj(cnpj)
             else:
-                logger.error(f"  ❌ Erro HTTP: {response.status_code}")
-                try:
-                    logger.error(f"  ❌ Resposta: {response.text[:200]}")
-                except:
-                    pass
+                logger.error(f"  ❌ HTTP {response.status_code}")
                 return None
             
         except Exception as e:
-            logger.error(f"❌ Erro ao consultar CNPJ: {e}")
+            logger.error(f"❌ Erro: {e}")
             return None
     
     @staticmethod
-    def enriquecer_lead(nome_empresa: str, cidade: str, website: str = None) -> dict:
+    def enriquecer_lead(nome_empresa: str, cidade: str, estado: str, website: str = None) -> dict:
         """
         Pipeline completo de enriquecimento
         """
         
         logger.info(f"🔍 Enriquecendo: {nome_empresa}")
         
-        # 1. Busca CNPJ (várias estratégias)
-        cnpj = CNPJEnricher.buscar_cnpj_empresa(nome_empresa, cidade, website)
+        # 1. Busca CNPJ (banco local primeiro)
+        cnpj = CNPJEnricher.buscar_cnpj_empresa(nome_empresa, cidade, estado, website)
         
         if not cnpj:
             logger.warning("  ⚠️ CNPJ não encontrado")
             return None
         
-        logger.info(f"  📋 CNPJ encontrado: {cnpj}")
+        logger.info(f"  📋 CNPJ: {cnpj}")
         
-        # Aguarda para não bater rate limit
-        time.sleep(2)
+        # 2. Rate limit antes de consultar Receita (20s entre requests)
+        time.sleep(20)
         
-        # 2. Busca dados completos
+        # 3. Busca dados completos (sócios)
         dados = CNPJEnricher.buscar_dados_cnpj(cnpj)
         
-        if dados:
-            # 3. Tenta extrair nome do principal sócio
-            if dados['socios']:
-                principal_socio = dados['socios'][0]['nome']
-                primeiro_nome = principal_socio.split()[0].title()
-                
-                dados['contato_nome'] = primeiro_nome
-                dados['contato_cargo'] = dados['socios'][0]['qualificacao']
+        if dados and dados['socios']:
+            # 4. Extrai nome do principal sócio
+            principal_socio = dados['socios'][0]['nome']
+            primeiro_nome = principal_socio.split()[0].title()
             
-            return dados
+            dados['contato_nome'] = primeiro_nome
+            dados['contato_cargo'] = dados['socios'][0]['qualificacao']
+            
+            logger.info(f"  👤 Contato: {primeiro_nome} ({dados['contato_cargo']})")
         
-        return None
+        return dados
